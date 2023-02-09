@@ -46,7 +46,7 @@ class USTPaser(object):
         elif 10000 > _id > 999:
             note_id = '[#' + str(_id) + ']'
         else:
-            raise Exception('不会吧不会吧不会真的有人一个ust弄出10000个音符吧')
+            raise Exception('no more than 10000 notes in a ust file')
         return note_id
 
     def get_ust(self):
