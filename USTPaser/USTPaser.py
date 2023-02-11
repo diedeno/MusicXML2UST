@@ -24,8 +24,8 @@ class USTPaser(object):
         for note in musicxml:
             note_id = self.handle_id(_id)
             length = int(int(note[0]) * tempo)
-            if note[1] is True:
-                pitch = 24
+            if note[1] == 'True':
+                pitch = 00
             else:
                 pitch = note[1]
             lyric = note[2]
