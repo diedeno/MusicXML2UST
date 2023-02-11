@@ -11,7 +11,7 @@ def main(path):
         tempos = tempo.qpm
 
     xml_data = []
-    i = 0
+    i = 1
     for part in score_parser.parts:
         for measure in part.measures:
             for note in measure.notes:
