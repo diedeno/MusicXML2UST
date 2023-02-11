@@ -791,7 +791,7 @@ class Note(object):
         else:
             pit = str(self.pitch[1])
 
-        lyc = ''
+        lyc = 'R'
         if self.has_lyric:
             for lyric in self.lyric:
                 lyc = str(lyric['text'])
