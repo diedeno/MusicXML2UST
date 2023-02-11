@@ -24,7 +24,7 @@ def main(path):
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
-        print('MusicXML To UST Ver 0.1'
+        print('MusicXML To UST Ver 0.2'
               '\nLicensed under the Apache License, Version 2.0 (the "License");'
               '\nyou may not use this file except in compliance with the License.'
               '\nYou may obtain a copy of the License at'
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument('-i', '--input', default=None, type=str, help='path to MusicXML (default: None)')
-        # TODO: 文件夹下全部文件转换
+        # TODO: Convert all files in a folder
         # parser.add_argument('-d', '--dir', default=None, type=str, help='path to MusicXML directory (default: None)')
 
         args = parser.parse_args()
