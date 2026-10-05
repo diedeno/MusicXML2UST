@@ -120,6 +120,18 @@ class MusicXMLParserState(object):
         # Running total of time for the current event in seconds.
         # Resets to 0 on every part. Affected by <forward> and <backup> elements
         self.time_position = 0
+        
+        # Running total of musical time in MIDI ticks.
+        # Used for exact rhythmic positioning.
+        self.tick_position = Fraction(0, 1)
+        
+        # Current MusicXML swing setting.
+        # None means straight/no swing.
+        self.swing = None
+
+        # Pending first note of the current swing pair.
+        self.swing_pending_note = None
+
 
         # Default to a MIDI velocity of 64 (mf)
         self.velocity = 64
@@ -466,6 +478,9 @@ class Part(object):
         self._state.midi_channel = self.score_part.midi_channel
         self._state.midi_program = self.score_part.midi_program
         self._state.transpose = 0
+        self._state.swing = None
+        self._state.swing_pending_note = None
+
 
         xml_measures = xml_part.findall('measure')
         for measure in xml_measures:
@@ -515,9 +530,14 @@ class Measure(object):
                 self._parse_forward(child)
             elif child.tag == 'note':
                 note = Note(child, self.state)
+
+                self._apply_swing(note)
+
                 self.notes.append(note)
+
                 # Keep track of current note as previous note for chord timings
                 self.state.previous_note = note
+
 
                 # Sum up the MusicXML durations in voice 1 of this measure
                 if note.voice == 1 and not note.is_in_chord:
@@ -529,6 +549,76 @@ class Measure(object):
             else:
                 # Ignore other tag types because they are not relevant to Magenta.
                 pass
+                
+    def _apply_swing(self, note):
+        """Apply the current MusicXML swing setting to a note.
+
+        Swing is applied conservatively:
+        - only eighth-note swing is currently handled;
+        - notes must occur as consecutive non-chord eighth notes;
+        - rests break a swing pair;
+        - chords do not participate in swing pairing;
+        - the total duration of each pair remains unchanged.
+        """
+
+        swing = self.state.swing
+
+        if swing is None:
+            self.state.swing_pending_note = None
+            return
+
+        if swing.get('type', 'eighth') != 'eighth':
+            # 16th-note swing can be added separately later.
+            self.state.swing_pending_note = None
+            return
+
+        if note.is_rest or note.is_in_chord or note.is_grace_note:
+            self.state.swing_pending_note = None
+            return
+
+        if note.note_duration.type != 'eighth':
+            self.state.swing_pending_note = None
+            return
+
+        previous = self.state.swing_pending_note
+
+        if previous is None:
+            self.state.swing_pending_note = note
+            return
+
+        # Make sure the two notes are actually consecutive in the
+        # original MusicXML timing.
+        expected_position = (
+            previous.note_duration.tick_position +
+            previous.note_duration.midi_ticks
+        )
+
+        if note.note_duration.tick_position != expected_position:
+            self.state.swing_pending_note = note
+            return
+
+
+        first = swing['first']
+        second = swing['second']
+
+        pair_duration = (
+            previous.note_duration.midi_ticks +
+            note.note_duration.midi_ticks
+        )
+
+        previous_duration = int(round(
+            pair_duration * Fraction(first, first + second)
+        ))
+
+        second_duration = pair_duration - previous_duration
+
+        previous.apply_swing(previous_duration)
+        note.apply_swing(second_duration)
+
+
+        # The second note starts a new potential pair.
+        self.state.swing_pending_note = None
+                
 
     def _parse_attributes(self, xml_attributes):
         """Parse the MusicXML <attributes> element."""
@@ -579,16 +669,62 @@ class Measure(object):
 
     def _parse_direction(self, xml_direction):
         """Parse the MusicXML <direction> element."""
-
         for child in xml_direction:
-            if child.tag == 'sound':
-                if child.get('tempo') is not None:
-                    tempo = Tempo(self.state, child)
-                    self.tempos.append(tempo)
-                    self.state.qpm = tempo.qpm
-                    self.state.seconds_per_quarter = 60 / self.state.qpm
-                    if child.get('dynamics') is not None:
-                        self.state.velocity = int(child.get('dynamics'))
+            if child.tag != 'sound':
+                continue
+
+            if child.get('tempo') is not None:
+                tempo = Tempo(self.state, child)
+                self.tempos.append(tempo)
+                self.state.qpm = tempo.qpm
+                self.state.seconds_per_quarter = 60 / self.state.qpm
+
+            if child.get('dynamics') is not None:
+                self.state.velocity = int(child.get('dynamics'))
+
+            # MusicXML swing information.
+            #
+            # Swing is a playback instruction and may become active at
+            # any point in the score, rather than necessarily applying
+            # to the complete score.
+            swing = child.find('swing')
+
+            if swing is not None:
+                straight = swing.find('straight')
+
+                if straight is not None:
+                    self.state.swing = None
+                    self.state.swing_pending_note = None
+                    continue
+
+                first = swing.find('first')
+                second = swing.find('second')
+
+                if first is not None and second is not None:
+                    try:
+                        first_value = int(first.text)
+                        second_value = int(second.text)
+                    except (TypeError, ValueError):
+                        # Ignore malformed swing information.
+                        continue
+
+                    if first_value > 0 and second_value > 0:
+                        swing_type = swing.find('swing-type')
+                        swing_type_value = (
+                            swing_type.text
+                            if swing_type is not None and swing_type.text
+                            else 'eighth'
+                        )
+
+                        self.state.swing = {
+                            'first': first_value,
+                            'second': second_value,
+                            'type': swing_type_value
+                        }
+
+                        # A new swing instruction starts a new pairing.
+                        self.state.swing_pending_note = None
+
 
     def _parse_forward(self, xml_forward):
         """Parse the MusicXML <forward> element.
@@ -679,6 +815,11 @@ class Note(object):
         self.is_grace_note = False
         self.pitch = None  # Tuple (Pitch Name, MIDI number)
         self.note_duration = NoteDuration(state)
+        # Playback duration after applying swing.
+        # None means use the original MusicXML duration.
+        self.playback_ticks = None
+
+
         self.state = state
 
         self.has_lyric = False
@@ -784,6 +925,12 @@ class Note(object):
             res.append({'number': lyric['number'], 'info': {'note': self.pitch[0], 'lyric': lyric['text']}})
         return res
 
+    def apply_swing(self, duration):
+        """Set the playback duration in MIDI/UST ticks."""
+        self.playback_ticks = duration
+
+
+
     # For MusicXML2UST
     def get_note(self):
         if self.is_rest:
@@ -796,7 +943,15 @@ class Note(object):
             for lyric in self.lyric:
                 lyc = str(lyric['text'])
 
-        return [str(self.note_duration.duration), pit, lyc]
+        duration = self.playback_ticks
+
+        if duration is None:
+            duration = self.note_duration.midi_ticks
+
+
+
+        return [duration, pit, lyc]
+
 
     @staticmethod
     def pitch_to_midi_pitch(step, alter, octave):
@@ -857,6 +1012,7 @@ class NoteDuration(object):
         self.midi_ticks = 0  # Duration in MIDI ticks
         self.seconds = 0  # Duration in seconds
         self.time_position = 0  # Onset time in seconds
+        self.tick_position = Fraction(0, 1)  # Onset position in MIDI ticks
         self.dots = 0  # Number of augmentation dots
         self._type = 'quarter'  # MusicXML duration type
         self.tuplet_ratio = Fraction(1, 1)  # Ratio for tuplets (default to 1)
@@ -872,13 +1028,19 @@ class NoteDuration(object):
         if is_in_chord:
             self.duration = self.state.previous_note.note_duration.duration
 
-        self.midi_ticks = self.duration
-        self.midi_ticks *= (StaticAssets.STANDARD_PPQ / self.state.divisions)
+        self.midi_ticks = (
+            Fraction(self.duration, 1) *
+            Fraction(StaticAssets.STANDARD_PPQ, self.state.divisions)
+        )
 
-        self.seconds = (self.midi_ticks / StaticAssets.STANDARD_PPQ)
+        self.seconds = (
+            self.midi_ticks / StaticAssets.STANDARD_PPQ
+        )
         self.seconds *= self.state.seconds_per_quarter
 
+
         self.time_position = self.state.time_position
+        self.tick_position = self.state.tick_position
 
         # Not sure how to handle durations of grace notes yet as they
         # steal time from subsequent notes and they do not have a
@@ -886,13 +1048,12 @@ class NoteDuration(object):
         self.is_grace_note = is_grace_note
 
         if is_in_chord:
-            # If this is a chord, set the time position to the time position
-            # of the previous note (i.e. all the notes in the chord will have
-            # the same time position)
             self.time_position = self.state.previous_note.note_duration.time_position
+            self.tick_position = self.state.previous_note.note_duration.tick_position
         else:
-            # Only increment time positions once in chord
             self.state.time_position += self.seconds
+            self.state.tick_position += self.midi_ticks
+
 
     def _convert_type_to_ratio(self):
         """Convert the MusicXML note-type-value to a Python Fraction.
