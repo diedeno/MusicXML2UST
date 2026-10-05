@@ -4,6 +4,10 @@ from USTPaser.USTPaser import USTPaser
 import argparse
 import os
 
+# MusicXML2UST v0.3.0
+# MusicXML -> UST converter with swing support
+
+
 def main(path):
     tempos = 120
     score_parser = MusicXMLDocument(path)
