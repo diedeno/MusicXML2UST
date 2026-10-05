@@ -23,7 +23,9 @@ class USTPaser(object):
 
         for note in musicxml:
             note_id = self.handle_id(_id)
-            length = int(int(note[0]) * tempo)
+            # note[0] may be a Fraction when swing is active.
+            length = int(round(float(note[0])))
+
             if note[1] == 'True':
                 pitch = 00
             else:
