@@ -2,5 +2,5 @@
 MusicXML file conversion UTAU ust file
 
 ```
-usage: main [-h] [-i INPUT]
+usage: python music2ust.py [-h] [-i INPUT]
 ```
